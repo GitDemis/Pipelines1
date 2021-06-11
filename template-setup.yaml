@@ -35,6 +35,10 @@ objects:
       - default: 'false'
         name: TLSVERIFY
         type: string
+      - default: '4'
+        description: version a ser usada
+        name: php-version
+        type: string
     tasks:
       - name: fetch-repository
         params:
@@ -70,6 +74,8 @@ objects:
             value: $(params.TLSVERIFY)
           - name: PATH_CONTEXT
             value: website
+          - name: MINOR_VERSION
+            value: $(params.php-version)
         runAfter:
           - read-tag-version
         taskRef:
