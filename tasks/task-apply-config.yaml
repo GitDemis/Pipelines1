@@ -1,0 +1,20 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: apply-config
+spec:
+  params:
+  - name: appName
+    type: string
+  - name: namespace
+    type: string
+  - name: tagVersion
+    type: string
+  steps:
+  - image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+    name: process-and-apply-template
+    resources: {}
+    script: "#!/usr/bin/env bash\n#set -xe\n\nappName=$(inputs.params.appName)\nnamespace=$(inputs.params.namespace)\ntagVersion=$(inputs.params.tagVersion) \necho \"Namespace: $namespace, AppName: $appName, Tag: $tagVersion  \"\n\n#HAGO EL SUBSTRING DEL NAMESPACE PARA OBTENER EL ENVIRONMENT\nenvironment=$(echo $namespace | cut -d '-' -f 2)\nfilename=./openshift/$environment/deploymentPatch.yaml\n\nif [ -f \"$filename\" ];\nthen\n    echo \"Se encontró $filename: se aplican los cambios...\"\n    #oc apply -f $filename\n    oc process --param NAMESPACE=$namespace --param APP_NAME=$appName --param TAG_VERSION=$tagVersion -f $filename | oc apply -f -\nelse\n    echo \"No se encontró $filename. No se aplicarán cambios.\"\nfi\n"
+    workingDir: /workspace/source
+  workspaces:
+  - name: source

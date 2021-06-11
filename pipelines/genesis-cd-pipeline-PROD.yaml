@@ -1,0 +1,115 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  labels:
+    app.kubernetes.io/instance: genesis-cd-pipeline-prod
+    pipeline.openshift.io/runtime: php
+    pipeline.openshift.io/type: openshift
+  name: genesis-cd-pipeline-prod
+  namespace: CHANGE-NAMESPACE-PROD
+spec:
+  params:
+  - default: genesis-web
+    description: Nombre final de la app
+    name: APP_NAME
+    type: string
+  - default: https://gitlab.mininterior.gob.ar/sistemas-dggi/genesis
+    description: Url del repositorio del código fuente
+    name: GIT_REPO
+    type: string
+  - default: master
+    description: Branch a deployar
+    name: GIT_REVISION
+    type: string
+  - default: "false"
+    description: Verificación de seguridad
+    name: TLSVERIFY
+    type: string
+  - default: genesis
+    description: Prefijo del namespace
+    name: ENV_PREFIX
+    type: string
+  tasks:
+  - name: fetch-repository
+    params:
+    - name: url
+      value: $(params.GIT_REPO)
+    - name: revision
+      value: $(params.GIT_REVISION)
+    - name: subdirectory
+      value: ""
+    - name: deleteExisting
+      value: "true"
+    taskRef:
+      kind: ClusterTask
+      name: git-clone
+    workspaces:
+    - name: output
+      workspace: workspace
+  - name: read-tag-version
+    runAfter:
+    - fetch-repository
+    taskRef:
+      kind: Task
+      name: read-version-tag
+    workspaces:
+    - name: source
+      workspace: workspace
+  - name: import-image-from-desa
+    params:
+    - name: ARGS
+      value:
+      - image mirror default-route-openshift-image-registry.apps.desa-ocp01.mininterior.gob.ar/$(params.ENV_PREFIX)-dev/$(params.APP_NAME):$(tasks.read-tag-version.results.tag_version) image-registry.openshift-image-registry.svc:5000/$(context.pipelineRun.namespace)/$(params.APP_NAME):$(tasks.read-tag-version.results.tag_version) --insecure --loglevel=9
+    runAfter:
+    - read-tag-version
+    taskRef:
+      kind: ClusterTask
+      name: openshift-client
+  - name: apply-template
+    params:
+    - name: template
+      value: template.yaml
+    - name: namespace
+      value: $(context.pipelineRun.namespace)
+    - name: app_name
+      value: $(params.APP_NAME)
+    - name: tag_version
+      value: $(tasks.read-tag-version.results.tag_version)
+    runAfter:
+    - import-image-from-desa
+    taskRef:
+      kind: Task
+      name: process-and-apply
+    workspaces:
+    - name: source
+      workspace: workspace
+  - name: apply-deployment-patch
+    params:
+    - name: namespace
+      value: $(context.pipelineRun.namespace)
+    - name: appName
+      value: $(params.APP_NAME)
+    - name: tagVersion
+      value: $(tasks.read-tag-version.results.tag_version)
+    runAfter:
+    - apply-template
+    taskRef:
+      kind: Task
+      name: apply-config
+    workspaces:
+    - name: source
+      workspace: workspace
+  - name: deploy
+    params:
+    - name: ARGS
+      value:
+      - rollout
+      - status
+      - deployment/$(params.APP_NAME)
+    runAfter:
+    - apply-deployment-patch
+    taskRef:
+      kind: ClusterTask
+      name: openshift-client
+  workspaces:
+  - name: workspace

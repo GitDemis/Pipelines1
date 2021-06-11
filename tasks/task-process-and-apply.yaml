@@ -1,0 +1,32 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: process-and-apply
+spec:
+  params:
+  - description: The name of the deployment patch the image
+    name: template
+    type: string
+  - description: The name of the namespace
+    name: namespace
+    type: string
+  - description: The name of the Application
+    name: app_name
+    type: string
+  - description: The version of the Application
+    name: tag_version
+    type: string
+  steps:
+  - image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+    name: process-and-apply-template
+    resources: {}
+    script: |
+      #!/usr/bin/env bash
+      set -xe
+
+      CTAG=$(inputs.params.tag_version)
+
+      oc process --param NAMESPACE=$(inputs.params.namespace) --param APP_NAME=$(inputs.params.app_name) --param TAG_VERSION=$CTAG -f ./openshift/$(inputs.params.template) | oc apply -f -
+    workingDir: /workspace/source
+  workspaces:
+  - name: source

@@ -1,0 +1,442 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+labels:
+  name: ${APP_NAME}
+message: |-
+  Pipelines creados.
+metadata:
+  annotations:
+    description: |-
+      Este template crea los pipelines y las task necesarias en el ambiente actual.
+    iconClass: icon-php
+    tags: ci-cd, pipeline
+    openshift.io/display-name: Template for Setup Enviroment
+  name: template-for-setup-enviroment
+objects:
+- apiVersion: tekton.dev/v1beta1
+  kind: Pipeline
+  metadata:
+    name: genesis-ci-pipeline
+    labels:
+      app.kubernetes.io/instance: genesis-pipeline-CI
+      pipeline.openshift.io/runtime: php
+      pipeline.openshift.io/type: openshift
+  spec:
+    params:
+      - default: ${APP_NAME}
+        name: APP_NAME
+        type: string
+      - default: ${GIT_REPO}
+        name: GIT_REPO
+        type: string
+      - default: ${GIT_REVISION}
+        name: GIT_REVISION
+        type: string
+      - default: 'false'
+        name: TLSVERIFY
+        type: string
+    tasks:
+      - name: fetch-repository
+        params:
+          - name: url
+            value: $(params.GIT_REPO)
+          - name: revision
+            value: $(params.GIT_REVISION)
+          - name: subdirectory
+            value: ''
+          - name: deleteExisting
+            value: 'true'
+        taskRef:
+          kind: ClusterTask
+          name: git-clone
+        workspaces:
+          - name: output
+            workspace: workspace
+      - name: read-tag-version
+        runAfter:
+          - fetch-repository
+        taskRef:
+          kind: Task
+          name: read-version-tag
+        workspaces:
+          - name: source
+            workspace: workspace
+      - name: s2i-website
+        params:
+          - name: IMAGE
+            value: >-
+              image-registry.openshift-image-registry.svc:5000/$(context.pipelineRun.namespace)/$(params.APP_NAME):latest
+          - name: TLSVERIFY
+            value: $(params.TLSVERIFY)
+          - name: PATH_CONTEXT
+            value: website
+        runAfter:
+          - read-tag-version
+        taskRef:
+          kind: ClusterTask
+          name: s2i-php
+        workspaces:
+          - name: source
+            workspace: workspace
+      - name: tag-image-version
+        params:
+          - name: namespace
+            value: $(context.pipelineRun.namespace)
+          - name: app_name
+            value: $(params.APP_NAME)
+        runAfter:
+          - s2i-website
+        taskRef:
+          kind: Task
+          name: tag-image-version
+        workspaces:
+          - name: source
+            workspace: workspace
+      - name: oc-apply-template
+        params:
+          - name: template
+            value: template.yaml
+          - name: namespace
+            value: $(context.pipelineRun.namespace)
+          - name: app_name
+            value: $(params.APP_NAME)
+          - name: tag_version
+            value: $(tasks.read-tag-version.results.tag_version)
+        runAfter:
+          - tag-image-version
+        taskRef:
+          kind: Task
+          name: process-and-apply
+        workspaces:
+          - name: source
+            workspace: workspace
+      - name: deploy
+        params:
+          - name: ARGS
+            value:
+              - rollout
+              - status
+              - deployment/$(params.APP_NAME)
+        runAfter:
+          - oc-apply-template
+        taskRef:
+          kind: ClusterTask
+          name: openshift-client
+    workspaces:
+      - name: workspace
+- apiVersion: tekton.dev/v1beta1
+  kind: Pipeline
+  metadata:
+    name: genesis-cd-pipeline
+    labels:
+      app.kubernetes.io/instance: genesis-pipeline-CD
+      pipeline.openshift.io/runtime: php
+      pipeline.openshift.io/type: openshift
+  spec:
+    params:
+    - default: ${APP_NAME}
+      name: APP_NAME
+      type: string
+    - default: ${GIT_REPO}
+      name: GIT_REPO
+      type: string
+    - default: ${GIT_REVISION}
+      name: GIT_REVISION
+      type: string
+    - default: "false"
+      name: TLSVERIFY
+      type: string
+    - default: ${ENV_PREFIX}
+      name: ENV_PREFIX
+      type: string
+    tasks:
+    - name: fetch-repository
+      params:
+      - name: url
+        value: $(params.GIT_REPO)
+      - name: revision
+        value: $(params.GIT_REVISION)
+      - name: subdirectory
+        value: ""
+      - name: deleteExisting
+        value: "true"
+      taskRef:
+        kind: ClusterTask
+        name: git-clone
+      workspaces:
+      - name: output
+        workspace: workspace
+    - name: read-tag-version
+      runAfter:
+      - fetch-repository
+      taskRef:
+        kind: Task
+        name: read-version-tag
+      workspaces:
+      - name: source
+        workspace: workspace
+    - name: import-image
+      params:
+      - name: ARGS
+        value:
+        - image mirror default-route-openshift-image-registry.apps.desa-ocp01.mininterior.gob.ar/$(params.ENV_PREFIX)-dev/$(params.APP_NAME):$(tasks.read-tag-version.results.tag_version) image-registry.openshift-image-registry.svc:5000/$(context.pipelineRun.namespace)/$(params.APP_NAME):$(tasks.read-tag-version.results.tag_version) --insecure
+      runAfter:
+      - read-tag-version
+      taskRef:
+        kind: ClusterTask
+        name: openshift-client
+    - name: apply-template
+      params:
+      - name: template
+        value: template.yaml
+      - name: namespace
+        value: $(context.pipelineRun.namespace)
+      - name: app_name
+        value: $(params.APP_NAME)
+      - name: tag_version
+        value: $(tasks.read-tag-version.results.tag_version)
+      runAfter:
+      - import-image
+      taskRef:
+        kind: Task
+        name: process-and-apply
+      workspaces:
+      - name: source
+        workspace: workspace
+    - name: apply-deployment-patch
+      params:
+      - name: namespace
+        value: $(context.pipelineRun.namespace)
+      - name: appName
+        value: $(params.APP_NAME)
+      - name: tagVersion
+        value: $(tasks.read-tag-version.results.tag_version)
+      runAfter:
+      - apply-template
+      taskRef:
+        kind: Task
+        name: apply-config
+      workspaces:
+      - name: source
+        workspace: workspace
+    - name: deploy
+      params:
+      - name: ARGS
+        value:
+        - rollout
+        - status
+        - deployment/$(params.APP_NAME)
+      runAfter:
+      - apply-deployment-patch
+      taskRef:
+        kind: ClusterTask
+        name: openshift-client
+    workspaces:
+    - name: workspace
+- apiVersion: tekton.dev/v1beta1
+  kind: Task
+  metadata:
+    name: process-and-apply
+  spec:
+    params:
+      - description: The name of the deployment patch the image
+        name: template
+        type: string
+      - description: The name of the namespace
+        name: namespace
+        type: string
+      - description: The name of the Application
+        name: app_name
+        type: string
+      - description: The version of the Application
+        name: tag_version
+        type: string
+    steps:
+      - image: 'image-registry.openshift-image-registry.svc:5000/openshift/cli:latest'
+        name: process-and-apply-template
+        resources: {}
+        script: >
+          #!/usr/bin/env bash
+
+          set -xe
+
+
+          CTAG=$(inputs.params.tag_version)
+
+
+          oc process --param NAMESPACE=$(inputs.params.namespace) --param
+          APP_NAME=$(inputs.params.app_name) --param TAG_VERSION=$CTAG -f
+          ./openshift/$(inputs.params.template) | oc apply -f -
+        workingDir: /workspace/source
+    workspaces:
+      - name: source
+- apiVersion: tekton.dev/v1beta1
+  kind: Task
+  metadata:
+    name: read-version-tag
+  spec:
+    results:
+      - description: version de app
+        name: tag_version
+    steps:
+      - image: 'image-registry.openshift-image-registry.svc:5000/openshift/cli:latest'
+        name: read-tag-version
+        resources: {}
+        script: |
+          #!/usr/bin/env bash
+          cat version_app | tee $(results.tag_version.path)
+        workingDir: /workspace/source
+    workspaces:
+      - name: source
+- apiVersion: tekton.dev/v1beta1
+  kind: Task
+  metadata:
+    name: tag-image-version
+  spec:
+    params:
+      - description: The name of the namespace
+        name: namespace
+        type: string
+      - description: The name of the namespace
+        name: app_name
+        type: string
+    steps:
+      - args:
+          - >-
+            VERSION=$(<version_app); oc tag
+            image-registry.openshift-image-registry.svc:5000/$(params.namespace)/$(params.app_name):latest
+            $(params.app_name):$VERSION
+        command:
+          - /bin/bash
+          - '-c'
+        image: 'image-registry.openshift-image-registry.svc:5000/openshift/cli:latest'
+        name: read-and-set-image-version
+        resources: {}
+        workingDir: /workspace/source
+    workspaces:
+      - name: source
+- apiVersion: tekton.dev/v1beta1
+  kind: Task
+  metadata:
+    name: apply-config
+  spec:
+    params:
+      - name: appName
+        type: string
+      - name: namespace
+        type: string
+      - name: tagVersion
+        type: string
+    steps:
+      - image: 'image-registry.openshift-image-registry.svc:5000/openshift/cli:latest'
+        name: process-and-apply-template
+        resources: {}
+        script: |
+          #!/usr/bin/env bash
+          #set -xe
+
+          appName=$(inputs.params.appName)
+          namespace=$(inputs.params.namespace)
+          tagVersion=$(inputs.params.tagVersion) 
+          echo "Namespace: $namespace, AppName: $appName, Tag: $tagVersion  "
+
+          #HAGO EL SUBSTRING DEL NAMESPACE PARA OBTENER EL ENVIRONMENT
+          environment=$(echo $namespace | cut -d '-' -f 2)
+          filename=./openshift/$environment/deploymentPatch.yaml
+
+          if [ -f "$filename" ];
+          then
+              echo "Se encontró $filename: se aplican los cambios..."
+              #oc apply -f $filename
+              oc process --param NAMESPACE=$namespace --param APP_NAME=$appName --param TAG_VERSION=$tagVersion -f $filename | oc apply -f -
+          else
+              echo "No se encontró $filename. No se aplicarán cambios."
+          fi
+        workingDir: /workspace/source
+    workspaces:
+      - name: source      
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: source-pvc
+  spec:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 500Mi      
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: pipeline
+  secrets:
+    - name: repository-credential
+    - name: desa-copy-image-secret
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: RoleBinding
+  metadata:
+    name: edit-for-pipeline
+  subjects:
+    - kind: ServiceAccount
+      name: pipeline
+      namespace: ${ENV_PREFIX}-test
+    - kind: ServiceAccount
+      name: pipeline
+      namespace: ${ENV_PREFIX}-qa
+    - kind: ServiceAccount
+      name: pipeline
+      namespace: ${ENV_PREFIX}-prod      
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: edit
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: repository-credential
+    annotations:
+      tekton.dev/git-0: https://gitlab.mininterior.gob.ar
+  type: kubernetes.io/basic-auth
+  stringData:
+    username: CHANGE_ME
+    password: CHANGE_ME
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: desa-copy-image-secret
+  type: kubernetes.io/dockerconfigjson
+  data:
+    .dockerconfigjson: eyJhdXRocyI6eyJkZWZhdWx0LXJvdXRlLW9wZW5zaGlmdC1pbWFnZS1yZWdpc3RyeS5hcHBzLmRlc2Etb2NwMDEubWluaW50ZXJpb3IuZ29iLmFyIjp7InVzZXJuYW1lIjoiMTIzNDUiLCJwYXNzd29yZCI6IkNBTUJJQVIiLCJhdXRoIjoiWkdObGJHVnVkR0Z1YnpwaGJHZHYiLCJlbWFpbCI6IiJ9fX0=
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: genesis-cm
+  data:
+    DB_HOST: CHANGE_ME
+    DB_NAME: CHANGE_ME
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: genesis-db-secret
+  data:
+    DB_PASS: Q0hBR0VfTUU=
+    DB_USER: Q0hBR0VfTUU=
+  type: Opaque
+parameters:
+- description: The Application Name.
+  displayName: AppName
+  name: APP_NAME
+  required: true
+- description: The Enviroment name prefix (ej. genesis-dev --> genesis)
+  displayName: EnvPrefix
+  name: ENV_PREFIX
+  required: true
+- description: The Application source code repository (GIT)
+  displayName: GitRepo
+  name: GIT_REPO
+  required: true
+- description: The Application branch source code (GIT). Default is master
+  displayName: GitRevision
+  name: GIT_REVISION
+  required: false
+  value: master

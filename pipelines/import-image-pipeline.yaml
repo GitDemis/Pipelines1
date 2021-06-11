@@ -1,0 +1,38 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  labels:
+    app.kubernetes.io/instance: import-image-pipeline
+    name: import-image-pipeline
+    pipeline.openshift.io/runtime: php
+    pipeline.openshift.io/type: openshift
+    template.openshift.io/template-instance-owner: 6b77ed9c-619d-4ecf-8305-fbaacbe8ff31
+  name: import-image-pipeline
+spec:
+  params:
+  - default: genesis-web
+    name: IMAGE_NAME
+    type: string
+    description: Nombre imagen a importar.
+  - default: 1.0.0
+    name: TAG_NAME
+    type: string
+    description: TAG a importar.
+  - default: genesis-dev
+    name: SOURCE_NAMESPACE
+    type: string
+    description: Namespace de origen de la imagen.
+  - default: "false"
+    name: TLSVERIFY
+    type: string
+  tasks:
+  - name: import-image
+    params:
+    - name: ARGS
+      value:
+      - image mirror default-route-openshift-image-registry.apps.desa-ocp01.mininterior.gob.ar/$(params.SOURCE_NAMESPACE)/$(params.IMAGE_NAME):$(params.TAG_NAME) image-registry.openshift-image-registry.svc:5000/$(context.pipelineRun.namespace)/$(params.IMAGE_NAME):$(params.TAG_NAME) --insecure --loglevel=9
+    taskRef:
+      kind: ClusterTask
+      name: openshift-client
+  workspaces:
+  - name: workspace

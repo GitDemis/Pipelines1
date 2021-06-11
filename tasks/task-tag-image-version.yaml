@@ -1,0 +1,24 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: tag-image-version
+spec:
+  params:
+  - description: The name of the namespace
+    name: namespace
+    type: string
+  - description: The name of the namespace
+    name: app_name
+    type: string
+  steps:
+  - args:
+    - VERSION=$(<version_app); oc tag image-registry.openshift-image-registry.svc:5000/$(params.namespace)/$(params.app_name):latest $(params.app_name):$VERSION
+    command:
+    - /bin/bash
+    - -c
+    image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+    name: read-and-set-image-version
+    resources: {}
+    workingDir: /workspace/source
+  workspaces:
+  - name: source

@@ -1,0 +1,18 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: read-version-tag
+spec:
+  results:
+  - description: version de app
+    name: tag_version
+  steps:
+  - image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+    name: read-tag-version
+    resources: {}
+    script: |
+      #!/usr/bin/env bash
+      cat version_app | tee $(results.tag_version.path)
+    workingDir: /workspace/source
+  workspaces:
+  - name: source
